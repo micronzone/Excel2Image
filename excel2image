@@ -1,0 +1,160 @@
+#!/usr/bin/env python3
+import os
+import sys
+from openpyxl import load_workbook
+from matplotlib import pyplot as plt
+from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
+from PIL import Image
+from matplotlib import rcParams, font_manager
+
+
+import os
+import platform
+from matplotlib import font_manager, rcParams
+
+def set_korean_font():
+    # 운영체제에 따른 폰트 경로 설정
+    if platform.system() == "Darwin":  # macOS
+        font_dirs = [
+            "~/Library/Fonts",
+            "/Library/Fonts",
+            "/System/Library/Fonts"
+        ]
+    elif platform.system() == "Windows":  # Windows
+        font_dirs = [
+            os.path.expanduser(r"~\AppData\Local\Microsoft\Windows\Fonts"),
+            os.path.expanduser(r"~\AppData\Roaming\Microsoft\Windows\Fonts"),
+            r"C:\Windows\Fonts"
+        ]
+    elif platform.system() == "Linux":  # Linux
+        font_dirs = [
+            "/usr/share/fonts",
+            "/usr/local/share/fonts",
+            "~/.fonts"
+        ]
+    else:
+        print("Unsupported platform.")
+        return
+
+    # 홈 디렉토리 경로 확장
+    font_dirs = [os.path.expanduser(dir) for dir in font_dirs]
+
+    # 시스템 폰트 검색
+    for font_dir in font_dirs:
+        if os.path.exists(font_dir):
+            for font in font_manager.findSystemFonts(font_dir):
+                # 한국어 폰트 이름을 포함한 폰트 찾기
+                if "AppleGothic" in font or "MalgunGothic" in font or "NanumGothic" in font:
+                    rcParams["font.family"] = font_manager.FontProperties(fname=font).get_name()
+                    print(f"Using font: {font}")
+                    return
+
+    print("Warning: No Korean font found. Using default font.")
+
+
+def get_data_range(sheet):
+    data = []
+    max_row = sheet.max_row
+    max_col = sheet.max_column
+
+    # 각 행의 마지막 유효 데이터 열 확인
+    max_used_col = 0
+    for row in sheet.iter_rows(max_row=max_row, max_col=max_col):
+        row_data = [cell.value if cell.value is not None else "" for cell in row]
+        if any(row_data):  # 데이터가 있는 행만 포함
+            data.append(row_data)
+            # 마지막 유효 데이터 열 계산
+            max_used_col = max(max_used_col, len(row_data) - row_data[::-1].index(next(filter(None, row_data[::-1]), "")))
+
+    # 모든 행을 max_used_col 크기에 맞춰 자르지 않고 빈 셀 채움
+    adjusted_data = [row[:max_used_col] + [""] * (max_used_col - len(row)) for row in data]
+
+    # 병합된 셀 처리
+    for merged_range in sheet.merged_cells.ranges:
+        min_row, min_col, max_row, max_col = merged_range.bounds
+        merged_value = sheet.cell(min_row, min_col).value
+        if merged_value:
+            merged_value = str(merged_value).replace("\n", " ")  # Replace line breaks
+            for row_idx in range(min_row - 1, max_row):
+                for col_idx in range(min_col - 1, max_col):
+                    adjusted_data[row_idx][col_idx] = merged_value
+
+    return adjusted_data
+
+
+
+def adjust_text_alignment(data):
+    """
+    Ensure text alignment and multi-line handling.
+    """
+    adjusted_data = []
+    for row in data:
+        adjusted_row = []
+        for cell in row:
+            if isinstance(cell, str):
+                cell = cell.strip().replace("\n", " ")  # Replace newline with space
+            adjusted_row.append(cell)
+        adjusted_data.append(adjusted_row)
+    return adjusted_data
+
+
+def excel_to_images(excel_path, output_dir):
+    if not os.path.exists(excel_path):
+        print(f"Error: File '{excel_path}' does not exist.")
+        return
+
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
+    wb = load_workbook(excel_path, data_only=True)
+    set_korean_font()
+
+    for sheet_name in wb.sheetnames:
+        sheet = wb[sheet_name]
+
+        # Extract and adjust data range
+        data = get_data_range(sheet)
+        data = adjust_text_alignment(data)
+        if not data:
+            print(f"Skipping empty sheet: {sheet_name}")
+            continue
+
+        # Determine figure size dynamically
+        fig_width = max(len(row) for row in data) * 2  # Dynamic width based on columns
+        fig_height = len(data) * 0.5  # Dynamic height based on rows
+        fig, ax = plt.subplots(figsize=(fig_width, fig_height))
+        ax.axis("tight")
+        ax.axis("off")
+
+        # Create table
+        table = ax.table(
+            cellText=data,
+            loc="center",
+            cellLoc="center"
+        )
+        table.auto_set_font_size(False)
+        table.set_fontsize(10)
+
+        # Adjust cell properties
+        for cell in table.get_celld().values():
+            cell.set_linewidth(0.5)
+
+        # Save as image
+        canvas = FigureCanvas(fig)
+        canvas.draw()
+        img_path = os.path.join(output_dir, f"{sheet_name}.jpg")
+        img = Image.frombytes("RGB", canvas.get_width_height(), canvas.tostring_rgb())
+        img.save(img_path)
+        print(f"Saved: {img_path}")
+        plt.close(fig)
+
+    print("Conversion complete.")
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 3:
+        print("Usage: python excel_to_images.py <excel_file_path> <output_directory>")
+    else:
+        excel_file = sys.argv[1]
+        output_directory = sys.argv[2]
+        excel_to_images(excel_file, output_directory)
